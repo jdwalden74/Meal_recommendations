@@ -16,11 +16,11 @@ export default function AuthButton({ provider }: { provider: string }) {
       >
         <img
           className="w-6 h-6"
-          src="https://www.svgrepo.com/show/475656/google-color.svg"
+          src={provider === "google" ? "https://www.svgrepo.com/show/475656/google-color.svg" : "https://www.svgrepo.com/show/508699/landscape-placeholder.svg"}
           loading="lazy"
-          alt="google logo"
+          alt={provider === "google" ? "google logo" : "anonymous logo"}
         />
-        <span>Sign in with Google</span>
+        <span>Sign in with {provider === "google" ? "Google" : "Anonymous"}</span>
       </motion.button>
     </form>
   );
