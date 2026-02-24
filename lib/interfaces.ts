@@ -16,3 +16,11 @@ export interface UserGameDataRecord {
   attempts: Attempt[];
   highestSimilarityScore: number | null;
 }
+
+export interface User {
+    _id?: ObjectId;
+    fname: string;
+    lname: string;
+    email: string;
+    password: string;
+}
