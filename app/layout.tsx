@@ -2,6 +2,9 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
+import { ThemeProvider } from "next-themes";
+import { Navbar } from "@/components/NavBar";
+import { html } from "motion/react-client";
 
 
 
@@ -26,14 +29,18 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <Providers>
-      <html lang="en">
-        <body
-          className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-        >
-          {children}
-        </body>
-      </html>
-    </Providers>
+        <html lang="en" suppressHydrationWarning>
+          <body
+            className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+          >
+            <Providers>
+              <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+                <Navbar />
+                {children}
+              </ThemeProvider>
+            </Providers>
+          </body>
+        </html>
+      
   );
 }

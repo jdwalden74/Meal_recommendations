@@ -11,6 +11,7 @@ export const config = {
   matcher: [
     "/play/:path*",
     "/dashboard/:path*",
-    // Add other protected routes here
+    "/calendar/:path*",
+    "/profile/:path*",
   ],
 };
