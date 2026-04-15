@@ -122,6 +122,39 @@ export class MealPlanData extends DataLayer {
       { returnDocument: "after" }
     );
   }
+
+  /**
+   * Insert or replace a single day within a week's meal plan.
+   * If the week plan doesn't exist yet, creates it with just this one day.
+   * Used by the PATCH endpoint so LLM actions can target a single day.
+   */
+  public async upsertDay(userId: string, weekStartDate: string, day: DayMeals) {
+    const collection = await this.getCollection();
+    const existing = await collection.findOne({ userId, weekStartDate });
+
+    if (!existing) {
+      const now = new Date();
+      return collection.insertOne({
+        userId,
+        weekStartDate,
+        days: [day],
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    // Replace the matching date entry or append if not present
+    const dayExists = existing.days.some((d) => d.date === day.date);
+    const updatedDays = dayExists
+      ? existing.days.map((d) => (d.date === day.date ? day : d))
+      : [...existing.days, day];
+
+    return collection.findOneAndUpdate(
+      { userId, weekStartDate },
+      { $set: { days: updatedDays, updatedAt: new Date() } },
+      { returnDocument: "after" }
+    );
+  }
 }
 
 // ─── Chat History ──────────────────────────────────────────────────────────────

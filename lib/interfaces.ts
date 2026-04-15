@@ -29,6 +29,7 @@ export interface Meal {
   type: MealType;
   time: string;
   image: string;
+  description?: string; // free-text summary, useful for LLM-generated meals
   nutrition: NutritionalInfo;
   ingredients?: string[];
 }
@@ -66,6 +67,24 @@ export interface MealPlan {
   updatedAt: Date;
 }
 
+// ─── LLM Actions ───────────────────────────────────────────────────────────────
+// Typed contract for what the LLM emits in ChatMessage.structuredOutput.
+// The chat API reads this field and calls PATCH /api/meal-plan accordingly.
+
+export interface LlmMealAction {
+  action: "set_meal";
+  date: string;    // ISO date "YYYY-MM-DD"
+  meal: Meal;      // full Meal object to insert/replace for that day
+}
+
+export interface LlmClearAction {
+  action: "clear_meal";
+  date: string;       // ISO date "YYYY-MM-DD"
+  mealType: MealType; // which meal slot to remove
+}
+
+export type LlmAction = LlmMealAction | LlmClearAction;
+
 // ─── Chat History ──────────────────────────────────────────────────────────────
 
 export type ChatRole = "user" | "assistant";
@@ -77,5 +96,5 @@ export interface ChatMessage {
   content: string;
   timestamp: Date;
   // Structured JSON payload the LLM emits to update the meal plan, if present
-  structuredOutput?: Record<string, unknown>;
+  structuredOutput?: LlmAction;
 }
