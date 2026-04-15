@@ -1,22 +1,36 @@
 "use client"
 import { useState, useEffect } from 'react';
-import { format, parseISO, addMonths, subMonths, startOfWeek, addWeeks, subWeeks, isSameDay } from 'date-fns';
-import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, LayoutGrid, Rows3 } from 'lucide-react';
+import { format, parseISO, addMonths, subMonths, startOfWeek, addWeeks, subWeeks, isSameDay, startOfMonth, endOfMonth, addDays } from 'date-fns';
+import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, LayoutGrid, Rows3, Save } from 'lucide-react';
 import { CalendarMonthView } from '@/components/calendar/CalendarMonthView';
 import { CalendarWeekView } from '@/components/calendar/CalendarWeekView';
 import { SelectedDayMeals } from '@/components/calendar/SelectedDayMeals';
 import { MealDetailModal } from '@/components/calendar/MealDetailModal';
 import { MealEditModal } from '@/components/calendar/MealEditModal';
-import { generateMockCalendarData, getWeekData } from '@/components/calendar/mockData';
+import { ChatBox } from '@/components/calendar/ChatBox';
+import { eachDayOfInterval } from 'date-fns';
 import { Meal, DayMeals, CalendarViewType } from '@/components/calendar/types';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
-function applyEdit(days: DayMeals[], updated: Meal): DayMeals[] {
-  return days.map((day) => ({
-    ...day,
-    meals: day.meals.map((m) => (m.id === updated.id ? updated : m)),
-  }));
+/** PATCH a single day into its week document (creates the week if needed). */
+async function persistDay(day: DayMeals, weekStart: Date) {
+  const res = await fetch('/api/meal-plan', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      weekStartDate: format(weekStart, 'yyyy-MM-dd'),
+      day: {
+        date: format(day.date, 'yyyy-MM-dd'),
+        status: day.status,
+        meals: day.meals,
+      },
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    console.error('[persistDay] failed', res.status, err);
+  }
 }
 
 /** PUT the week's days to the API; fall back to POST if no plan exists yet. */
@@ -31,18 +45,25 @@ async function persistWeek(days: DayMeals[], weekStart: Date) {
     })),
   };
 
-  const res = await fetch('/api/meal-plan', {
+  const putRes = await fetch('/api/meal-plan', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
 
-  if (res.status === 404) {
-    await fetch('/api/meal-plan', {
+  if (putRes.status === 404) {
+    const postRes = await fetch('/api/meal-plan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
+    if (!postRes.ok) {
+      const err = await postRes.json().catch(() => ({}));
+      console.error('[persistWeek] POST failed', postRes.status, err);
+    }
+  } else if (!putRes.ok) {
+    const err = await putRes.json().catch(() => ({}));
+    console.error('[persistWeek] PUT failed', putRes.status, err);
   }
 }
 
@@ -50,21 +71,78 @@ export default function Calendar() {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<Date | null>(new Date());
   const [viewType, setViewType] = useState<CalendarViewType>('month');
+  const [isSaving, setIsSaving] = useState(false);
+
+  // ── Empty-state helpers ───────────────────────────────────────────────────
+  function emptyMonthDays(year: number, month: number): DayMeals[] {
+    const days = eachDayOfInterval({
+      start: startOfMonth(new Date(year, month, 1)),
+      end: endOfMonth(new Date(year, month, 1)),
+    });
+    return days.map((date) => ({ date, status: 'none' as const, meals: [] }));
+  }
+
+  function emptyWeekDays(weekStart: Date): DayMeals[] {
+    return Array.from({ length: 7 }, (_, i) => ({
+      date: addDays(weekStart, i),
+      status: 'none' as const,
+      meals: [],
+    }));
+  }
 
   // ── Mutable calendar & week data ──────────────────────────────────────────
   const [calendarData, setCalendarData] = useState<DayMeals[]>(() =>
-    generateMockCalendarData(new Date().getFullYear(), new Date().getMonth())
+    emptyMonthDays(new Date().getFullYear(), new Date().getMonth())
   );
   const [weekData, setWeekData] = useState<DayMeals[]>(() =>
-    getWeekData(startOfWeek(new Date()))
+    emptyWeekDays(startOfWeek(new Date()))
   );
 
-  // Regenerate when month changes
+  // Load month data from DB
   useEffect(() => {
-    setCalendarData(generateMockCalendarData(currentDate.getFullYear(), currentDate.getMonth()));
+    const emptyBase = emptyMonthDays(currentDate.getFullYear(), currentDate.getMonth());
+    setCalendarData(emptyBase);
+
+    // Collect all unique week-start dates visible in this month view
+    const monthStart = startOfMonth(currentDate);
+    const monthEnd = endOfMonth(currentDate);
+    const weekStarts: string[] = [];
+    let cursor = startOfWeek(monthStart);
+    while (cursor <= monthEnd) {
+      weekStarts.push(format(cursor, 'yyyy-MM-dd'));
+      cursor = addDays(cursor, 7);
+    }
+
+    Promise.all(
+      weekStarts.map((ws) =>
+        fetch(`/api/meal-plan?week=${ws}`)
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null)
+      )
+    ).then((results) => {
+      /* eslint-disable @typescript-eslint/no-explicit-any */
+      const dbDays: DayMeals[] = results.flatMap((plan: any) =>
+        plan?.days
+          ? plan.days.map((d: any) => ({
+              date: parseISO(d.date),
+              status: d.status,
+              meals: d.meals,
+            }))
+          : []
+      );
+      /* eslint-enable @typescript-eslint/no-explicit-any */
+      if (dbDays.length > 0) {
+        setCalendarData((prev) =>
+          prev.map((day) => {
+            const real = dbDays.find((db) => isSameDay(db.date, day.date));
+            return real ?? day;
+          })
+        );
+      }
+    });
   }, [currentDate.getFullYear(), currentDate.getMonth()]);
 
-  // Load week from DB (fall back to mock if no plan saved yet)
+  // Load week from DB
   useEffect(() => {
     const ws = startOfWeek(currentDate);
     const weekStr = format(ws, 'yyyy-MM-dd');
@@ -81,10 +159,10 @@ export default function Calendar() {
             }))
           );
         } else {
-          setWeekData(getWeekData(ws));
+          setWeekData(emptyWeekDays(ws));
         }
       })
-      .catch(() => setWeekData(getWeekData(startOfWeek(currentDate))));
+      .catch(() => setWeekData(emptyWeekDays(startOfWeek(currentDate))));
   }, [format(startOfWeek(currentDate), 'yyyy-MM-dd')]);
 
   // ── Detail modal ──────────────────────────────────────────────────────────
@@ -119,32 +197,47 @@ export default function Calendar() {
   }
 
   function handleMealSave(updated: Meal) {
-    let newWeekData: DayMeals[];
+    // Determine which date is being modified.
+    // For a new meal, use addingToDate. For an edit, find the day that owns the meal.
+    const targetDate: Date = addingToDate ?? (() => {
+      const owner = [...calendarData, ...weekData].find((d) =>
+        d.meals.some((m) => m.id === updated.id)
+      );
+      return owner?.date ?? selectedDate ?? currentDate;
+    })();
 
-    if (addingToDate) {
-      const targetDate = addingToDate;
-      const insertIntoDay = (day: DayMeals): DayMeals => {
-        if (!isSameDay(day.date, targetDate)) return day;
-        const newMeals = [...day.meals, updated];
-        const types = new Set(newMeals.map((m) => m.type));
-        const status =
-          types.has('breakfast') && types.has('lunch') && types.has('dinner')
-            ? 'planned'
-            : 'in-progress';
-        return { ...day, meals: newMeals, status };
-      };
-      newWeekData = weekData.map(insertIntoDay);
-      setCalendarData((prev) => prev.map(insertIntoDay));
-      setAddingToDate(null);
-    } else {
-      newWeekData = applyEdit(weekData, updated);
-      setCalendarData((prev) => applyEdit(prev, updated));
-    }
+    const updateDay = (day: DayMeals): DayMeals => {
+      if (!isSameDay(day.date, targetDate)) return day;
+      const newMeals = addingToDate
+        ? [...day.meals, updated]
+        : day.meals.map((m) => (m.id === updated.id ? updated : m));
+      const types = new Set(newMeals.map((m) => m.type));
+      const status =
+        types.has('breakfast') && types.has('lunch') && types.has('dinner')
+          ? 'planned'
+          : newMeals.length > 0
+          ? 'in-progress'
+          : 'none';
+      return { ...day, meals: newMeals, status };
+    };
 
+    const newCalendarData = calendarData.map(updateDay);
+    const newWeekData = weekData.map(updateDay);
+
+    setCalendarData(newCalendarData);
     setWeekData(newWeekData);
+    setAddingToDate(null);
     setIsEditOpen(false);
     setEditMeal(null);
-    persistWeek(newWeekData, startOfWeek(currentDate));
+
+    // Find the updated day object to send to the API
+    const updatedDay =
+      newCalendarData.find((d) => isSameDay(d.date, targetDate)) ??
+      newWeekData.find((d) => isSameDay(d.date, targetDate));
+
+    if (updatedDay) {
+      persistDay(updatedDay, startOfWeek(targetDate));
+    }
   }
 
   // ── Selected day ──────────────────────────────────────────────────────────
@@ -167,6 +260,15 @@ export default function Calendar() {
     setCurrentDate(new Date());
     setSelectedDate(new Date());
   };
+
+  async function handleSavePlan() {
+    setIsSaving(true);
+    try {
+      await persistWeek(weekData, startOfWeek(currentDate));
+    } finally {
+      setIsSaving(false);
+    }
+  }
 
   const getHeaderText = () => {
     if (viewType === 'month') return format(currentDate, 'MMMM yyyy');
@@ -240,6 +342,16 @@ export default function Calendar() {
               >
                 Today
               </button>
+              {viewType === 'week' && (
+                <button
+                  onClick={handleSavePlan}
+                  disabled={isSaving}
+                  className="flex items-center gap-1.5 px-4 py-1.5 bg-emerald-600 text-white rounded-lg font-medium text-sm hover:bg-emerald-700 disabled:opacity-60 transition-colors"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  {isSaving ? 'Saving…' : 'Save plan'}
+                </button>
+              )}
             </div>
 
             <button
@@ -268,7 +380,7 @@ export default function Calendar() {
         </div>
 
         {/* Calendar Views */}
-        <div className={viewType === 'month' ? 'grid grid-cols-1 xl:grid-cols-3 gap-8' : 'w-full'}>
+        <div className={viewType === 'month' ? 'grid grid-cols-1 xl:grid-cols-3 gap-8' : 'flex flex-col gap-8'}>
           <div className={viewType === 'month' ? 'xl:col-span-2' : 'w-full'}>
             {viewType === 'month' ? (
               <CalendarMonthView
@@ -289,16 +401,23 @@ export default function Calendar() {
             )}
           </div>
 
-          {viewType === 'month' && (
+          {viewType === 'month' ? (
             <div className="xl:col-span-1">
-              <div className="sticky top-8">
+              <div className="sticky top-8 flex flex-col gap-6">
                 <SelectedDayMeals
                   dayData={selectedDayData}
                   onMealClick={(meal) => { setSelectedMeal(meal); setIsDetailOpen(true); }}
                   onMealEdit={openEdit}
                   onAddMeal={openAddMeal}
                 />
+                <div className="h-[420px]">
+                  <ChatBox />
+                </div>
               </div>
+            </div>
+          ) : (
+            <div className="h-[420px]">
+              <ChatBox />
             </div>
           )}
         </div>

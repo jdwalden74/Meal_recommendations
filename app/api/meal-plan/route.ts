@@ -63,6 +63,7 @@ export async function GET(request: Request) {
   try {
     const userId = await getAuthenticatedUserId();
     if (!userId) {
+      console.warn("[GET /api/meal-plan] No session — returning 401");
       return Response.json({ error: "Unauthorized." }, { status: 401 });
     }
 
@@ -107,6 +108,7 @@ export async function POST(request: Request) {
   try {
     const userId = await getAuthenticatedUserId();
     if (!userId) {
+      console.warn("[POST /api/meal-plan] No session — returning 401");
       return Response.json({ error: "Unauthorized." }, { status: 401 });
     }
 
@@ -133,6 +135,7 @@ export async function POST(request: Request) {
       .filter((i) => i !== null);
 
     if (invalidDays.length > 0) {
+      console.warn("[POST /api/meal-plan] Validation failed at day indices:", invalidDays, JSON.stringify(days[invalidDays[0] as number]));
       return Response.json(
         { error: `Invalid day entries at index: ${invalidDays.join(", ")}.` },
         { status: 400 }
@@ -168,6 +171,7 @@ export async function PUT(request: Request) {
   try {
     const userId = await getAuthenticatedUserId();
     if (!userId) {
+      console.warn("[PUT /api/meal-plan] No session — returning 401");
       return Response.json({ error: "Unauthorized." }, { status: 401 });
     }
 
@@ -194,6 +198,7 @@ export async function PUT(request: Request) {
       .filter((i) => i !== null);
 
     if (invalidDays.length > 0) {
+      console.warn("[PUT /api/meal-plan] Validation failed at day indices:", invalidDays, JSON.stringify(days[invalidDays[0] as number]));
       return Response.json(
         { error: `Invalid day entries at index: ${invalidDays.join(", ")}.` },
         { status: 400 }
@@ -214,6 +219,41 @@ export async function PUT(request: Request) {
     return Response.json(updated);
   } catch (err) {
     console.error("[PUT /api/meal-plan]", err);
+    return Response.json({ error: "Internal server error." }, { status: 500 });
+  }
+}
+
+// ─── PATCH /api/meal-plan ──────────────────────────────────────────────────────
+// Insert or replace a single day within a week's plan.
+// Primarily for LLM-driven updates where only one day changes at a time.
+// Body: { weekStartDate: string; day: DayMeals }
+
+export async function PATCH(request: Request) {
+  try {
+    const userId = await getAuthenticatedUserId();
+    if (!userId) {
+      return Response.json({ error: "Unauthorized." }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const { weekStartDate, day } = body ?? {};
+
+    if (!isValidIsoDate(weekStartDate)) {
+      return Response.json(
+        { error: "weekStartDate must be a valid ISO date string (YYYY-MM-DD)." },
+        { status: 400 }
+      );
+    }
+
+    if (!validateDayMeals(day)) {
+      return Response.json({ error: "Invalid day entry." }, { status: 400 });
+    }
+
+    const mealPlanData = new MealPlanData();
+    const result = await mealPlanData.upsertDay(userId, weekStartDate, day);
+    return Response.json(result, { status: 200 });
+  } catch (err) {
+    console.error("[PATCH /api/meal-plan]", err);
     return Response.json({ error: "Internal server error." }, { status: 500 });
   }
 }

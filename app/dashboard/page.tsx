@@ -3,7 +3,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { useSession } from "next-auth/react";
 import { startOfWeek, addDays, format, parseISO } from "date-fns";
-import { getWeekData } from "@/components/calendar/mockData";
 import { DayMeals, Meal } from "@/components/calendar/types";
 import { MealEditModal } from "@/components/calendar/MealEditModal";
 import {
@@ -14,11 +13,11 @@ import {
   CheckSquare,
   Square,
   Pencil,
+  Save,
 } from "lucide-react";
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
-const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MEAL_TYPES = ["breakfast", "lunch", "dinner"] as const;
 const COST_PER_MEAL = 8; // rough estimate dollars
 
@@ -109,25 +108,49 @@ export default function Dashboard() {
   const weekStart = startOfWeek(today);
   const weekStartStr = format(weekStart, 'yyyy-MM-dd');
 
-  const [week, setWeek] = useState<DayMeals[]>(() => getWeekData(weekStart));
+  // Empty state: full 7-day week starting from Sunday
+  function emptyFullWeek(): DayMeals[] {
+    return Array.from({ length: 7 }, (_, i) => ({
+      date: addDays(weekStart, i),
+      status: "none" as const,
+      meals: [],
+    }));
+  }
+
+  const [week, setWeek] = useState<DayMeals[]>(() => emptyFullWeek());
+  const [isLoading, setIsLoading] = useState(true);
   const [editMeal, setEditMeal] = useState<Meal | null>(null);
   const [isEditOpen, setIsEditOpen] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
-  // Load this week's plan from DB on mount; fall back to mock if nothing saved yet
+  // Load this week's plan from DB on mount
   useEffect(() => {
+    setIsLoading(true);
     fetch(`/api/meal-plan?week=${weekStartStr}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
+        const base = emptyFullWeek();
         if (data?.days) {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          setWeek(data.days.map((d: any) => ({
+          const dbDays = data.days.map((d: any) => ({
             date: parseISO(d.date),
             status: d.status,
             meals: d.meals,
-          })));
+          }));
+          // Overlay DB days onto the empty frame — days with no saved meals stay empty
+          setWeek(base.map((empty) => {
+            const real = dbDays.find(
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              (d: any) => format(d.date, "yyyy-MM-dd") === format(empty.date, "yyyy-MM-dd")
+            );
+            return real ?? empty;
+          }));
+        } else {
+          setWeek(base);
         }
       })
-      .catch(() => {/* keep mock data */});
+      .catch(() => setWeek(emptyFullWeek()))
+      .finally(() => setIsLoading(false));
   }, [weekStartStr]);
 
   async function persistWeek(days: DayMeals[]) {
@@ -139,17 +162,33 @@ export default function Dashboard() {
         meals: d.meals,
       })),
     };
-    const res = await fetch('/api/meal-plan', {
+    const putRes = await fetch('/api/meal-plan', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    if (res.status === 404) {
-      await fetch('/api/meal-plan', {
+    if (putRes.status === 404) {
+      const postRes = await fetch('/api/meal-plan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
+      if (!postRes.ok) {
+        const err = await postRes.json().catch(() => ({}));
+        console.error('[persistWeek] POST failed', postRes.status, err);
+      }
+    } else if (!putRes.ok) {
+      const err = await putRes.json().catch(() => ({}));
+      console.error('[persistWeek] PUT failed', putRes.status, err);
+    }
+  }
+
+  async function handleSavePlan() {
+    setIsSaving(true);
+    try {
+      await persistWeek(week);
+    } finally {
+      setIsSaving(false);
     }
   }
 
@@ -264,8 +303,21 @@ export default function Dashboard() {
 
           {/* ── This week at a glance ── */}
           <div className="xl:col-span-2 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-700">
-              <h2 className="font-semibold text-slate-900 dark:text-white">This week</h2>
+            <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between">
+              <h2 className="font-semibold text-slate-900 dark:text-white">
+                This week
+                {isLoading && (
+                  <span className="ml-2 text-xs font-normal text-slate-400 animate-pulse">Loading…</span>
+                )}
+              </h2>
+              <button
+                onClick={handleSavePlan}
+                disabled={isSaving}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white rounded-lg font-medium text-sm hover:bg-emerald-700 disabled:opacity-60 transition-colors"
+              >
+                <Save className="w-3.5 h-3.5" />
+                {isSaving ? 'Saving…' : 'Save plan'}
+              </button>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -280,18 +332,18 @@ export default function Dashboard() {
                   </tr>
                 </thead>
                 <tbody>
-                  {week.map((day, i) => {
+                  {week.map((day) => {
                     const isToday = format(day.date, "yyyy-MM-dd") === format(today, "yyyy-MM-dd");
                     return (
                       <tr
-                        key={i}
+                        key={day.date.toISOString()}
                         className={`border-b last:border-0 border-slate-50 dark:border-slate-700/50 transition-colors ${
                           isToday ? "bg-emerald-50/60 dark:bg-emerald-900/10" : "hover:bg-slate-50 dark:hover:bg-slate-700/30"
                         }`}
                       >
                         <td className="px-4 py-3 font-medium text-slate-700 dark:text-slate-300 whitespace-nowrap">
                           <span className={isToday ? "text-emerald-600 dark:text-emerald-400 font-bold" : ""}>
-                            {DAY_LABELS[i]}
+                            {format(day.date, "EEE")}
                           </span>
                           <span className="block text-xs text-slate-400 font-normal">
                             {format(day.date, "MMM d")}
