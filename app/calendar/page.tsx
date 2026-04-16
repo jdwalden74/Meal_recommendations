@@ -72,6 +72,9 @@ export default function Calendar() {
   const [selectedDate, setSelectedDate] = useState<Date | null>(new Date());
   const [viewType, setViewType] = useState<CalendarViewType>('month');
   const [isSaving, setIsSaving] = useState(false);
+  // Incrementing this triggers both data-fetch useEffects to re-run after LLM edits
+  const [dataVersion, setDataVersion] = useState(0);
+  const handleMealPlanChanged = () => setDataVersion((v) => v + 1);
 
   // ── Empty-state helpers ───────────────────────────────────────────────────
   function emptyMonthDays(year: number, month: number): DayMeals[] {
@@ -140,7 +143,7 @@ export default function Calendar() {
         );
       }
     });
-  }, [currentDate.getFullYear(), currentDate.getMonth()]);
+  }, [currentDate.getFullYear(), currentDate.getMonth(), dataVersion]);
 
   // Load week from DB
   useEffect(() => {
@@ -163,7 +166,8 @@ export default function Calendar() {
         }
       })
       .catch(() => setWeekData(emptyWeekDays(startOfWeek(currentDate))));
-  }, [format(startOfWeek(currentDate), 'yyyy-MM-dd')]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [format(startOfWeek(currentDate), 'yyyy-MM-dd'), dataVersion]);
 
   // ── Detail modal ──────────────────────────────────────────────────────────
   const [selectedMeal, setSelectedMeal] = useState<Meal | null>(null);
@@ -411,13 +415,13 @@ export default function Calendar() {
                   onAddMeal={openAddMeal}
                 />
                 <div className="h-[420px]">
-                  <ChatBox />
+                  <ChatBox onMealPlanChanged={handleMealPlanChanged} />
                 </div>
               </div>
             </div>
           ) : (
             <div className="h-[420px]">
-              <ChatBox />
+              <ChatBox onMealPlanChanged={handleMealPlanChanged} />
             </div>
           )}
         </div>
