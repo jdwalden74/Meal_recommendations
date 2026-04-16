@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { Send, Trash2, Bot, User, Loader2 } from "lucide-react";
+import { format, startOfWeek, parseISO } from "date-fns";
 
 interface Message {
   role: "user" | "assistant";
@@ -9,7 +10,169 @@ interface Message {
   pending?: boolean;
 }
 
-export function ChatBox() {
+// Matches the LlmAction types in lib/interfaces.ts
+interface SetMealAction {
+  action: "set_meal";
+  date: string;
+  meal: {
+    id: string;
+    name: string;
+    type: "breakfast" | "lunch" | "dinner" | "snack";
+    time: string;
+    image: string;
+    description?: string;
+    nutrition: { calories: number; protein: number; carbs: number; fat: number };
+    ingredients?: string[];
+  };
+}
+
+interface ClearMealAction {
+  action: "clear_meal";
+  date: string;
+  mealType: "breakfast" | "lunch" | "dinner" | "snack";
+}
+
+type MealAction = SetMealAction | ClearMealAction;
+
+/** Parse every <meal_action>...</meal_action> block from the LLM response. */
+function parseAllMealActions(text: string): MealAction[] {
+  const results: MealAction[] = [];
+  for (const match of text.matchAll(/<meal_action>([\s\S]*?)<\/meal_action>/g)) {
+    try {
+      results.push(JSON.parse(match[1].trim()) as MealAction);
+    } catch {
+      console.warn("[ChatBox] Failed to parse meal_action JSON", match[1]);
+    }
+  }
+  return results;
+}
+
+/** Strip all <meal_action>...</meal_action> blocks from display text. */
+function stripMealActions(text: string): string {
+  return text
+    .replace(/<meal_action>[\s\S]*?<\/meal_action>/g, "")
+    .replace(/^\[\d{4}-\d{2}-\d{2}\]\s*/g, "")
+    .trim();
+}
+
+/**
+ * Apply all meal actions in a batched, efficient way:
+ * - Groups actions by week (one GET per week, not per meal)
+ * - Applies all mutations in-memory
+ * - PATCHes each touched day once
+ * Returns the total number of meals successfully applied.
+ */
+async function applyAllMealActions(
+  actions: MealAction[],
+  onDayApplied: (daysApplied: number) => void
+): Promise<number> {
+  // Group by week start date
+  const weekGroups = new Map<string, MealAction[]>();
+  for (const action of actions) {
+    const weekStart = format(startOfWeek(parseISO(action.date)), "yyyy-MM-dd");
+    const existing = weekGroups.get(weekStart) ?? [];
+    weekGroups.set(weekStart, [...existing, action]);
+  }
+
+  let totalApplied = 0;
+  let daysApplied = 0;
+
+  for (const [weekStart, weekActions] of weekGroups) {
+    // ONE GET per week (not per action)
+    const planRes = await fetch(`/api/meal-plan?week=${weekStart}`);
+    const existingPlan = planRes.ok ? await planRes.json().catch(() => null) : null;
+
+    type DayEntry = { date: string; status: string; meals: Record<string, unknown>[] };
+    const dayMap = new Map<string, DayEntry>();
+    for (const d of existingPlan?.days ?? []) {
+      dayMap.set(d.date, { date: d.date, status: d.status, meals: [...d.meals] });
+    }
+
+    const touchedDates = new Set(weekActions.map((a) => a.date));
+
+    // Apply every action in-memory
+    for (const action of weekActions) {
+      const day = dayMap.get(action.date) ?? { date: action.date, status: "none", meals: [] };
+
+      if (action.action === "set_meal") {
+        const meal = { ...action.meal, id: crypto.randomUUID() };
+        const meals = day.meals as { type: string; id: string }[];
+        day.meals = meals.some((m) => m.type === meal.type)
+          ? meals.map((m) => (m.type === meal.type ? meal : m))
+          : [...meals, meal];
+      } else if (action.action === "clear_meal") {
+        day.meals = (day.meals as { type: string }[]).filter(
+          (m) => m.type !== action.mealType
+        );
+      }
+
+      const types = new Set(day.meals.map((m) => (m as { type: string }).type));
+      day.status =
+        types.has("breakfast") && types.has("lunch") && types.has("dinner")
+          ? "planned"
+          : day.meals.length > 0
+          ? "in-progress"
+          : "none";
+
+      dayMap.set(action.date, day);
+    }
+
+    // ONE PATCH per touched day
+    for (const date of touchedDates) {
+      const day = dayMap.get(date);
+      if (!day) continue;
+      const res = await fetch("/api/meal-plan", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ weekStartDate: weekStart, day }),
+      });
+      if (res.ok) {
+        totalApplied += weekActions.filter((a) => a.date === date).length;
+        daysApplied++;
+        onDayApplied(daysApplied);
+      }
+    }
+  }
+
+  return totalApplied;
+}
+
+/** Build a human-readable summary of what was applied, e.g. "✓ Added 21 meals across 7 days (Apr 20 – Apr 26)". */
+function buildActionSummary(actions: MealAction[], appliedCount: number): string {
+  if (appliedCount === 0) return "";
+  const setActions = actions.filter((a): a is SetMealAction => a.action === "set_meal");
+  const clearActions = actions.filter((a): a is ClearMealAction => a.action === "clear_meal");
+
+  const uniqueDays = [...new Set(actions.map((a) => a.date).sort())];
+  const parts: string[] = [];
+
+  if (setActions.length > 0)
+    parts.push(`Added ${setActions.length} meal${setActions.length !== 1 ? "s" : ""}`);
+  if (clearActions.length > 0)
+    parts.push(`Removed ${clearActions.length} meal${clearActions.length !== 1 ? "s" : ""}`);
+
+  if (uniqueDays.length === 1) {
+    parts.push(`on ${format(parseISO(uniqueDays[0]), "EEEE, MMM d")}`);
+  } else {
+    const first = parseISO(uniqueDays[0]);
+    const last = parseISO(uniqueDays[uniqueDays.length - 1]);
+    if (uniqueDays.length > 2) {
+      parts.push(
+        `across ${uniqueDays.length} days (${format(first, "MMM d")} \u2013 ${format(last, "MMM d")})`
+      );
+    } else {
+      parts.push(`on ${format(first, "MMM d")} and ${format(last, "MMM d")}`);
+    }
+  }
+
+  return "\u2713 " + parts.join(" ");
+}
+
+interface ChatBoxProps {
+  onMealPlanChanged?: () => void;
+}
+
+export function ChatBox({ onMealPlanChanged }: ChatBoxProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
@@ -88,22 +251,78 @@ export function ChatBox() {
         const { done, value } = await reader.read();
         if (done) break;
         accumulated += decoder.decode(value, { stream: true });
-        const snapshot = accumulated;
+
+        // Display text up to (but not including) the first <meal_action tag.
+        // This freezes the display when action blocks start arriving, preventing
+        // the fill-then-shrink artifact caused by mid-stream regex stripping.
+        const actionStart = accumulated.indexOf("<meal_action");
+        const rawDisplay = actionStart === -1 ? accumulated : accumulated.slice(0, actionStart);
+        const displayText = rawDisplay.replace(/^\[\d{4}-\d{2}-\d{2}\]\s*/g, "");
+
         setMessages((prev) =>
           prev.map((m, i) =>
             i === prev.length - 1
-              ? { role: "assistant", content: snapshot, pending: false }
+              ? { role: "assistant", content: displayText, pending: displayText === "" }
               : m
           )
         );
       }
 
-      // If the stream closed with no content, show a fallback instead of leaving the bubble stuck
-      if (accumulated.trim() === "") {
+      // After stream ends: parse actions and determine what to show
+      const mealActions = parseAllMealActions(accumulated);
+      const cleanText = stripMealActions(accumulated);
+      const looksLikeRawJson =
+        cleanText.includes("</meal_action>") || /^\s*[{[]/.test(cleanText.trim());
+      const humanText = cleanText.trim() !== "" && !looksLikeRawJson ? cleanText : "";
+
+      if (mealActions.length > 0) {
+        const totalDays = new Set(mealActions.map((a) => a.date)).size;
+
+        const updateProgress = (done: number) => {
+          setMessages((prev) =>
+            prev.map((m, i) =>
+              i === prev.length - 1
+                ? {
+                    role: "assistant",
+                    content: `Saving your meal plan... (${done} / ${totalDays} day${totalDays !== 1 ? "s" : ""})`,
+                    pending: false,
+                  }
+                : m
+            )
+          );
+        };
+
+        // Show progress immediately before the first PATCH fires
+        updateProgress(0);
+
+        const appliedCount = await applyAllMealActions(mealActions, (done) => {
+          updateProgress(done);
+        });
+
+        if (appliedCount > 0) onMealPlanChanged?.();
+
+        const summary = buildActionSummary(mealActions, appliedCount);
+        const finalText = humanText
+          ? humanText + (summary ? "\n\n" + summary : "")
+          : summary || "I've updated your meal plan.";
+
         setMessages((prev) =>
           prev.map((m, i) =>
             i === prev.length - 1
-              ? { role: "assistant", content: "Something went wrong. Please try again." }
+              ? { role: "assistant", content: finalText, pending: false }
+              : m
+          )
+        );
+      } else {
+        // No actions — show human text or a fallback
+        setMessages((prev) =>
+          prev.map((m, i) =>
+            i === prev.length - 1
+              ? {
+                  role: "assistant",
+                  content: humanText || (accumulated.trim() === "" ? "Something went wrong. Please try again." : accumulated),
+                  pending: false,
+                }
               : m
           )
         );
