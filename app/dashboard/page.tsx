@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { useSession } from "next-auth/react";
+import { useRouter } from "next/navigation";
 import { startOfWeek, addDays, format, parseISO } from "date-fns";
 import { DayMeals, Meal } from "@/components/calendar/types";
 import { MealEditModal } from "@/components/calendar/MealEditModal";
@@ -14,7 +15,10 @@ import {
   Square,
   Pencil,
   Save,
+  Sparkles,
 } from "lucide-react";
+import { StarRating } from "@/components/ui/StarRating";
+import type { RecommendedFood } from "@/lib/ml";
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -252,6 +256,17 @@ export default function Dashboard() {
     });
   }
 
+  // ── Recommendations ──────────────────────────────────────────────────────────
+  const [recommendations, setRecommendations] = useState<RecommendedFood[]>([]);
+  useEffect(() => {
+    fetch("/api/recommendations")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data: RecommendedFood[]) => setRecommendations(data.slice(0, 8)))
+      .catch(() => {});
+  }, []);
+
+  const router = useRouter();
+
   const weekLabel = `${format(weekStart, "MMM d")} – ${format(addDays(weekStart, 6), "MMM d, yyyy")}`;
 
   return (
@@ -297,6 +312,37 @@ export default function Dashboard() {
             color="bg-violet-50 dark:bg-violet-900/20"
           />
         </div>
+
+        {/* ── Suggested for you ── */}
+        {recommendations.length > 0 && (
+          <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm p-5">
+            <div className="flex items-center gap-2 mb-3">
+              <Sparkles className="w-4 h-4 text-emerald-500" />
+              <h2 className="font-semibold text-slate-900 dark:text-white text-sm">Suggested for you</h2>
+              <span className="text-xs text-slate-400 dark:text-slate-500">
+                — click to plan a meal around these ingredients
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {recommendations.map((food) => (
+                <button
+                  key={food.name}
+                  onClick={() =>
+                    router.push(
+                      `/calendar?suggest=${encodeURIComponent(
+                        `Suggest a meal using ${food.name}`
+                      )}`
+                    )
+                  }
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 hover:border-emerald-400 dark:hover:border-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 hover:text-emerald-700 dark:hover:text-emerald-400 text-slate-700 dark:text-slate-300 text-xs font-medium transition-all"
+                >
+                  <span>{food.name}</span>
+                  <span className="text-slate-400 dark:text-slate-500">{Math.round(food.calories)} kcal</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* ── Main grid ── */}
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
@@ -360,6 +406,18 @@ export default function Dashboard() {
                                     <span className="block text-xs text-slate-400 dark:text-slate-500">
                                       {meal.nutrition.calories} kcal
                                     </span>
+                                    {meal.rating != null && (
+                                      <span className="block mt-1">
+                                        <StarRating
+                                          value={meal.rating}
+                                          onChange={() => {}}
+                                          readonly
+                                          mealId={meal.id}
+                                          mealName={meal.name}
+                                          nutrition={meal.nutrition}
+                                        />
+                                      </span>
+                                    )}
                                   </span>
                                   <button
                                     onClick={() => openEdit(meal)}

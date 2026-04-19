@@ -1,0 +1,35 @@
+services:
+  nextjs:
+    build:
+      context: .
+      dockerfile: Dockerfile.nextjs
+    ports:
+      - "3000:3000"
+    environment:
+      ML_SERVICE_URL: http://ml-service:8000
+      # Supply remaining secrets via a .env file or the environment block below.
+      # Required: MONGODB_URI, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
+      #           NEXTAUTH_SECRET, NEXTAUTH_URL
+    env_file:
+      - .env.local
+    depends_on:
+      ml-service:
+        condition: service_healthy
+
+  ml-service:
+    build:
+      context: ./ml
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount the CSV source files into the build-time data directory so that
+      # re-running preprocess + train inside the container picks up fresh data
+      # without rebuilding the image.
+      - ./lib/ml/data:/app/data:ro
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/docs')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s

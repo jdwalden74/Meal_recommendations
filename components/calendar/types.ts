@@ -15,8 +15,10 @@ export interface Meal {
   type: 'breakfast' | 'lunch' | 'dinner' | 'snack';
   time: string;
   image: string;
+  description?: string;
   nutrition: NutritionalInfo;
   ingredients?: string[];
+  rating?: number;
 }
 
 export interface DayMeals {

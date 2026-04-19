@@ -1,5 +1,9 @@
+"use client";
+
+import { useState } from 'react';
 import { X, Flame, Apple, Beef, Droplets, Pencil, UtensilsCrossed } from 'lucide-react';
 import { Meal } from './types';
+import { StarRating } from '@/components/ui/StarRating';
 
 interface MealDetailModalProps {
   meal: Meal | null;
@@ -9,6 +13,16 @@ interface MealDetailModalProps {
 }
 
 export function MealDetailModal({ meal, isOpen, onClose, onEdit }: MealDetailModalProps) {
+  const [rating, setRating] = useState<number | null>(meal?.rating ?? null);
+
+  // Re-sync rating if a different meal is opened
+  const currentMealId = meal?.id;
+  const [syncedMealId, setSyncedMealId] = useState<string | undefined>(currentMealId);
+  if (currentMealId !== syncedMealId) {
+    setRating(meal?.rating ?? null);
+    setSyncedMealId(currentMealId);
+  }
+
   if (!isOpen || !meal) return null;
 
   const nutritionItems = [
@@ -99,6 +113,27 @@ export function MealDetailModal({ meal, isOpen, onClose, onEdit }: MealDetailMod
                     </div>
                   );
                 })}
+              </div>
+            </div>
+
+            {/* Description + Rating */}
+            <div className="space-y-3">
+              {meal.description && (
+                <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
+                  {meal.description}
+                </p>
+              )}
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                  Your rating
+                </span>
+                <StarRating
+                  value={rating}
+                  onChange={setRating}
+                  mealId={meal.id}
+                  mealName={meal.name}
+                  nutrition={meal.nutrition}
+                />
               </div>
             </div>
 

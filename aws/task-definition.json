@@ -1,0 +1,101 @@
+{
+  "family": "meal-recommendations",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "2048",
+  "memory": "4096",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/meal-recommendations-task-role",
+  "containerDefinitions": [
+    {
+      "name": "ml-service",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/meal-recommendations-ml:latest",
+      "essential": true,
+      "cpu": 1024,
+      "memory": 2048,
+      "portMappings": [
+        {
+          "containerPort": 8000,
+          "protocol": "tcp"
+        }
+      ],
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"
+        ],
+        "interval": 10,
+        "timeout": 5,
+        "retries": 5,
+        "startPeriod": 60
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/meal-recommendations",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "ml-service"
+        }
+      }
+    },
+    {
+      "name": "nextjs",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/meal-recommendations-nextjs:latest",
+      "essential": true,
+      "cpu": 1024,
+      "memory": 2048,
+      "portMappings": [
+        {
+          "containerPort": 3000,
+          "protocol": "tcp"
+        }
+      ],
+      "dependsOn": [
+        {
+          "containerName": "ml-service",
+          "condition": "HEALTHY"
+        }
+      ],
+      "environment": [
+        {
+          "name": "NODE_ENV",
+          "value": "production"
+        },
+        {
+          "name": "ML_SERVICE_URL",
+          "value": "http://localhost:8000"
+        },
+        {
+          "name": "NEXTAUTH_URL",
+          "value": "https://YOUR_DOMAIN"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "MONGODB_URI",
+          "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/meal-recommendations/MONGODB_URI"
+        },
+        {
+          "name": "GOOGLE_CLIENT_ID",
+          "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/meal-recommendations/GOOGLE_CLIENT_ID"
+        },
+        {
+          "name": "GOOGLE_CLIENT_SECRET",
+          "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/meal-recommendations/GOOGLE_CLIENT_SECRET"
+        },
+        {
+          "name": "NEXTAUTH_SECRET",
+          "valueFrom": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/meal-recommendations/NEXTAUTH_SECRET"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/meal-recommendations",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "nextjs"
+        }
+      }
+    }
+  ]
+}

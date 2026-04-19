@@ -1,5 +1,6 @@
 "use client"
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { format, parseISO, addMonths, subMonths, startOfWeek, addWeeks, subWeeks, isSameDay, startOfMonth, endOfMonth, addDays } from 'date-fns';
 import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, LayoutGrid, Rows3, Save } from 'lucide-react';
 import { CalendarMonthView } from '@/components/calendar/CalendarMonthView';
@@ -68,6 +69,11 @@ async function persistWeek(days: DayMeals[], weekStart: Date) {
 }
 
 export default function Calendar() {
+  const searchParams = useSearchParams();
+  // Consume ?suggest= once — after reading we don't want it to re-apply on
+  // every render, so we capture it into a ref on first mount only.
+  const initialInput = useRef(searchParams.get('suggest') ?? '').current;
+
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<Date | null>(new Date());
   const [viewType, setViewType] = useState<CalendarViewType>('month');
@@ -415,13 +421,13 @@ export default function Calendar() {
                   onAddMeal={openAddMeal}
                 />
                 <div className="h-[420px]">
-                  <ChatBox onMealPlanChanged={handleMealPlanChanged} />
+                  <ChatBox onMealPlanChanged={handleMealPlanChanged} initialInput={initialInput} />
                 </div>
               </div>
             </div>
           ) : (
             <div className="h-[420px]">
-              <ChatBox onMealPlanChanged={handleMealPlanChanged} />
+              <ChatBox onMealPlanChanged={handleMealPlanChanged} initialInput={initialInput} />
             </div>
           )}
         </div>

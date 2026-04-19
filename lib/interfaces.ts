@@ -32,6 +32,7 @@ export interface Meal {
   description?: string; // free-text summary, useful for LLM-generated meals
   nutrition: NutritionalInfo;
   ingredients?: string[];
+  rating?: number;
 }
 
 // DayMeals uses an ISO date string so it serializes cleanly to/from MongoDB
@@ -97,4 +98,14 @@ export interface ChatMessage {
   timestamp: Date;
   // Structured JSON payload the LLM emits to update the meal plan, if present
   structuredOutput?: LlmAction;
+}
+
+export interface MealRating {
+  _id?: ObjectId;
+  userId: string;
+  mealId: string;
+  mealName: string;
+  rating: number; // 1–5
+  nutrition: NutritionalInfo;
+  ratedAt: Date;
 }

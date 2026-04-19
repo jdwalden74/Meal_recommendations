@@ -1,5 +1,5 @@
 import clientPromise from "./db";
-import { User, UserPreferences, MealPlan, DayMeals, ChatMessage } from "./interfaces";
+import { User, UserPreferences, MealPlan, DayMeals, ChatMessage, MealRating } from "./interfaces";
 
 // ─── Base ──────────────────────────────────────────────────────────────────────
 
@@ -190,5 +190,48 @@ export class ChatHistoryData extends DataLayer {
   public async clearHistory(userId: string) {
     const collection = await this.getCollection();
     return collection.deleteMany({ userId });
+  }
+}
+
+// ─── Meal Ratings ──────────────────────────────────────────────────────────────
+
+export class MealRatingData extends DataLayer {
+  private collectionName = "mealRatings";
+
+  private async getCollection() {
+    const db = await this.getDb();
+    return db.collection<MealRating>(this.collectionName);
+  }
+
+  /** Insert or replace a rating for a (userId, mealId) pair. */
+  public async addRating(rating: MealRating) {
+    const collection = await this.getCollection();
+    return collection.findOneAndUpdate(
+      { userId: rating.userId, mealId: rating.mealId },
+      { $set: { ...rating, ratedAt: new Date() } },
+      { upsert: true, returnDocument: "after" }
+    );
+  }
+
+  /** Return the most recent ratings for a user, newest first. */
+  public async getRecentRatings(userId: string, limit = 30) {
+    const collection = await this.getCollection();
+    return collection
+      .find({ userId })
+      .sort({ ratedAt: -1 })
+      .limit(limit)
+      .toArray();
+  }
+
+  /** Return the mean rating across all ratings for a specific meal. */
+  public async getAverageRating(userId: string, mealId: string) {
+    const collection = await this.getCollection();
+    const result = await collection
+      .aggregate<{ avg: number }>([
+        { $match: { userId, mealId } },
+        { $group: { _id: null, avg: { $avg: "$rating" } } },
+      ])
+      .toArray();
+    return result[0]?.avg ?? null;
   }
 }
