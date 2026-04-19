@@ -1,5 +1,5 @@
 "use client"
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { format, parseISO, addMonths, subMonths, startOfWeek, addWeeks, subWeeks, isSameDay, startOfMonth, endOfMonth, addDays } from 'date-fns';
 import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, LayoutGrid, Rows3, Save } from 'lucide-react';
@@ -68,7 +68,7 @@ async function persistWeek(days: DayMeals[], weekStart: Date) {
   }
 }
 
-export default function Calendar() {
+function CalendarContent() {
   const searchParams = useSearchParams();
   // Consume ?suggest= once — after reading we don't want it to re-apply on
   // every render, so we capture it into a ref on first mount only.
@@ -447,5 +447,17 @@ export default function Calendar() {
         onSave={handleMealSave}
       />
     </div>
+  );
+}
+
+export default function Calendar() {
+  return (
+    <Suspense fallback={
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="w-8 h-8 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    }>
+      <CalendarContent />
+    </Suspense>
   );
 }
