@@ -3,7 +3,8 @@ import { authOptions } from "@/lib/auth";
 import { ChatHistoryData, MealPlanData, UserPreferencesData } from "@/lib/datalayer";
 import { chatStream } from "@/lib/llm";
 import type { LlmMessage } from "@/lib/llm";
-import { MealPlan, UserPreferences } from "@/lib/interfaces";
+import { LlmAction, MealPlan, MealType, UserPreferences } from "@/lib/interfaces";
+import { getRecommendations, RecommendedFood } from "@/lib/ml";
 
 export const dynamic = "force-dynamic";
 
@@ -57,12 +58,14 @@ Rules:
 - Output one <meal_action> block PER meal being added, modified, or removed.
 - Always respect the user's dietary restrictions, allergies, and preferences.
 - Use ISO date format YYYY-MM-DD for the date field. Never use relative date strings.
+- If the user asks what meals you'd suggest or what they'd like, generate specific meal recommendations with full <meal_action> blocks. Do not respond with empty category headers like "Breakfast:", "Lunch:", "Dinner:" followed by nothing — every meal you mention must have a name, description, and complete nutrition data.
 `.trim();
 
 function buildSystemPrompt(
   preferences: UserPreferences | null,
   recentPlans: MealPlan[],
-  today: string
+  today: string,
+  recommendations: RecommendedFood[]
 ): string {
   const lines: string[] = [
     `You are a helpful meal planning assistant. Today's date is ${today}.`,
@@ -72,7 +75,26 @@ function buildSystemPrompt(
     "",
   ];
 
-  // ── Action schema (FIRST — highest priority instruction) ───────────────────
+  // ── Hard constraints (FIRST — overrides everything else) ──────────────────
+  lines.push("## HARD CONSTRAINTS — READ FIRST");
+  lines.push(
+    "The following are absolute restrictions. They override every other instruction, " +
+    "suggestion, or user request in this conversation. There are no exceptions."
+  );
+  lines.push(
+    "- NEVER ask a clarifying question AND output <meal_action> blocks in the same response. " +
+    "If you are going to add meals, just add them with your best judgment based on the user's preferences. " +
+    "If you genuinely need clarification first, ask ONLY the question — no action blocks. " +
+    "Pick one or the other, never both."
+  );
+  if (preferences?.allergies.length) {
+    for (const allergy of preferences.allergies) {
+      lines.push(`- NEVER include ${allergy} under any circumstances.`);
+    }
+  }
+  lines.push("");
+
+  // ── Action schema ──────────────────────────────────────────────────────────
   lines.push("## How to Modify Meal Plans (READ THIS FIRST)");
   lines.push(ACTION_SCHEMA);
   lines.push("");
@@ -120,19 +142,34 @@ function buildSystemPrompt(
     lines.push("");
   }
 
+  // ── Personalized ingredient suggestions ───────────────────────────────────
+  lines.push("## Personalized Ingredient Suggestions");
+  if (recommendations.length > 0) {
+    lines.push(
+      "The following foods have been selected by a recommendation model based on this " +
+      "user's caloric target, dietary restrictions, and past meal ratings. " +
+      "Prefer these ingredients when building meals, but you are not limited to them — " +
+      "use your judgement to compose balanced, varied meals."
+    );
+    lines.push(
+      "CRITICAL: Never suggest any food that conflicts with the user's allergies or dietary " +
+      "restrictions, regardless of whether it appears in this list."
+    );
+    lines.push("");
+    for (const food of recommendations) {
+      lines.push(`- ${food.name} (${food.calories} kcal/100 g) — ${food.category}`);
+    }
+  } else {
+    lines.push("No personalized suggestions available for this session.");
+  }
+  lines.push("");
+
   // ── Date handling rules ────────────────────────────────────────────────────
   lines.push("## Date Handling Rules");
   lines.push(`Today is ${today} (YYYY-MM-DD).`);
-  lines.push(
-    "When the user says 'tomorrow', 'next Monday', 'this week', 'next week', etc., " +
-    "calculate the absolute ISO 8601 date and use ONLY that form inside <meal_action> blocks. " +
-    "Never write a relative date string inside a <meal_action> block."
-  );
-  lines.push(
-    "CRITICAL: Dates inside <meal_action> blocks must be derived ONLY from the user's " +
-    "CURRENT message and today's date. NEVER copy or reuse dates that appear in prior " +
-    "conversation history when writing new <meal_action> blocks — history is reference only."
-  );
+  lines.push("- Resolve ALL relative dates (tomorrow, next Monday, the 13th, this weekend) to absolute ISO dates silently. Never ask the user what date they mean.");
+  lines.push("- If the user's message includes an [Active date context: YYYY-MM-DD] prefix, that is the date they are referring to. Use it directly.");
+  lines.push("- Dates inside <meal_action> blocks must always be absolute ISO strings. Never use relative date strings inside action blocks.");
   lines.push("");
 
   // ── History handling rules ─────────────────────────────────────────────────
@@ -153,27 +190,76 @@ function buildSystemPrompt(
   );
   lines.push("");
 
-  // Compute dynamic examples anchored to the real today so the LLM sees
-  // accurate arithmetic rather than hardcoded illustrative dates.
-  const todayDate = new Date(today + "T00:00:00Z");
-  const dow = todayDate.getUTCDay(); // 0=Sun…6=Sat
-  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-  const addDays = (d: Date, n: number) => { const r = new Date(d); r.setUTCDate(r.getUTCDate() + n); return r; };
-  const iso = (d: Date) => d.toISOString().split("T")[0];
-  const daysToNextMonday = dow === 0 ? 1 : dow === 1 ? 7 : 8 - dow;
-  const daysToNextFriday = dow < 5 ? 5 - dow : 5 - dow + 7;
-  const nextMondayStr = iso(addDays(todayDate, daysToNextMonday));
-  const nextFridayStr = iso(addDays(todayDate, daysToNextFriday));
-  const nwEndStr = iso(addDays(todayDate, daysToNextMonday + 6));
-
-  lines.push(`Examples (today is ${today}, a ${dayNames[dow]}):`);
-  lines.push(`- "tomorrow"    → "${iso(addDays(todayDate, 1))}"`);
-  lines.push(`- "next Monday" → "${nextMondayStr}"`);
-  lines.push(`- "this Friday" → "${nextFridayStr}"`);
-  lines.push(`- "next week"   → ${nextMondayStr} through ${nwEndStr}`);
-  lines.push("");
-
   return lines.join("\n");
+}
+
+// ─── Meal-action validator ─────────────────────────────────────────────────────
+
+const MEAL_TYPES = new Set<MealType>(["breakfast", "lunch", "dinner", "snack"]);
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function isValidLlmAction(value: unknown): value is LlmAction {
+  if (!value || typeof value !== "object") return false;
+  const obj = value as Record<string, unknown>;
+
+  if (!ISO_DATE_RE.test(obj.date as string)) return false;
+
+  if (obj.action === "clear_meal") {
+    return MEAL_TYPES.has(obj.mealType as MealType);
+  }
+
+  if (obj.action === "set_meal") {
+    const meal = obj.meal as Record<string, unknown> | undefined;
+    if (!meal || typeof meal !== "object") return false;
+    return (
+      typeof meal.id === "string" &&
+      typeof meal.name === "string" && meal.name.trim() !== "" &&
+      MEAL_TYPES.has(meal.type as MealType) &&
+      typeof meal.time === "string" &&
+      typeof meal.image === "string" &&
+      meal.nutrition !== null &&
+      typeof meal.nutrition === "object" &&
+      typeof (meal.nutrition as Record<string, unknown>).calories === "number" &&
+      typeof (meal.nutrition as Record<string, unknown>).protein === "number" &&
+      typeof (meal.nutrition as Record<string, unknown>).carbs === "number" &&
+      typeof (meal.nutrition as Record<string, unknown>).fat === "number"
+    );
+  }
+
+  return false;
+}
+
+/**
+ * Extracts all <meal_action> blocks from the LLM reply, validates each against
+ * LlmAction, logs malformed ones, and returns the count of valid actions.
+ */
+function parseAndValidateMealActions(reply: string): number {
+  let validCount = 0;
+
+  for (const match of reply.matchAll(/<meal_action>([\s\S]*?)<\/meal_action>/g)) {
+    const raw = match[1].trim();
+    let parsed: unknown;
+
+    try {
+      parsed = JSON.parse(raw);
+    } catch (err) {
+      console.warn("[POST /api/llm] malformed <meal_action> — JSON parse failed", {
+        error: (err as Error).message,
+        raw,
+      });
+      continue;
+    }
+
+    if (isValidLlmAction(parsed)) {
+      validCount++;
+    } else {
+      console.warn("[POST /api/llm] malformed <meal_action> — failed LlmAction validation", {
+        raw,
+      });
+    }
+  }
+
+  return validCount;
 }
 
 // ─── Auth helper ───────────────────────────────────────────────────────────────
@@ -213,10 +299,14 @@ export async function POST(request: Request) {
     const mealPlanData = new MealPlanData();
 
     const [history, preferences, allPlans] = await Promise.all([
-      chatData.getHistory(userId, 20),
+      chatData.getHistory(userId, 10),
       prefsData.getPreferences(userId),
       mealPlanData.getUserMealPlans(userId),
     ]);
+
+    const recommendations = preferences
+      ? await getRecommendations(userId, preferences)
+      : [];
 
     // Keep plans from the past 7 days onward (no stale history)
     const cutoffDate = new Date();
@@ -225,13 +315,23 @@ export async function POST(request: Request) {
     const recentPlans = allPlans.filter((p) => p.weekStartDate >= cutoffStr);
 
     // ── Build system prompt with context ──────────────────────────────────────
-    const systemPrompt = buildSystemPrompt(preferences, recentPlans, today);
+    const systemPrompt = buildSystemPrompt(preferences, recentPlans, today, recommendations);
+
+    // ── Strip meal-plan confirmation messages from history ────────────────────
+    // Assistant messages that are long or contain structured meal markers are
+    // already reflected in the system-prompt meal plan JSON. Including them in
+    // history double-counts old context and causes the model to reference stale
+    // meals (e.g. "leftover Osso Buco"). User messages are always kept intact.
+    const MEAL_CONTENT_RE = /Breakfast:|Lunch:|Dinner:|kcal|protein|carbs/i;
+    const filteredHistory = history.filter(
+      (m) => m.role !== "assistant" || (m.content.length <= 500 && !MEAL_CONTENT_RE.test(m.content))
+    );
 
     // ── Build Gemini message list ─────────────────────────────────────────────
     const llmMessages: LlmMessage[] = [
       { role: "user", content: systemPrompt },
       { role: "model", content: "Understood! I'm ready to help with meal planning, taking your preferences and current meal plans into account." },
-      ...history.map((m) => ({
+      ...filteredHistory.map((m) => ({
         role: (m.role === "assistant" ? "model" : "user") as "user" | "model",
         // Prefix each historical message with its date so the model can
         // distinguish old context from the current request and never reuses
@@ -240,19 +340,23 @@ export async function POST(request: Request) {
       })),
       // Clear separator so the LLM never treats the latest message as a
       // continuation of any pending question from history.
-      ...(history.length > 0
+      ...(filteredHistory.length > 0
         ? [
             {
               role: "user" as const,
               content:
-                "--- END OF HISTORY --- The above messages are past context only. " +
-                "Please respond ONLY to my next message as a fresh request.",
+                "--- END OF CONVERSATION HISTORY ---\n" +
+                "The messages above are READ-ONLY past context. Do NOT reference specific meals, " +
+                "leftovers, or plans from that history unless the user explicitly asks you to. " +
+                "The current meal plan state is shown in the system prompt above and is the " +
+                "authoritative source. Respond ONLY to my next message as a completely fresh request.",
             },
             {
               role: "model" as const,
               content:
-                "Understood. I'll treat the above as past context and respond fully to your " +
-                "next message, including outputting <meal_action> blocks as needed.",
+                "Understood. I will not reference past conversation meals or carry forward any " +
+                "prior context. I will respond to your next message based solely on your current " +
+                "meal plan and preferences as shown in the system prompt.",
             },
           ]
         : []),
@@ -260,41 +364,49 @@ export async function POST(request: Request) {
     ];
 
     // ── Save user message ─────────────────────────────────────────────────────
-    await chatData.addMessage({ userId, role: "user", content: trimmedMessage });
+    const cleanedMessage = trimmedMessage.replace(/^\[Active date context: \d{4}-\d{2}-\d{2}\]\s*/, "");
+    await chatData.addMessage({ userId, role: "user", content: cleanedMessage });
 
-    // ── Stream response ───────────────────────────────────────────────────────
-    const encoder = new TextEncoder();
+    // ── Collect full reply ────────────────────────────────────────────────────
+    // We buffer the entire LLM output before responding so that:
+    //   (a) meal actions can be parsed and validated server-side, and
+    //   (b) X-Meal-Actions-Count can be set as a true response header
+    //       (HTTP headers must be sent before the body).
     let fullReply = "";
+    try {
+      for await (const chunk of chatStream(llmMessages)) {
+        fullReply += chunk;
+      }
+    } catch (err) {
+      console.error("[POST /api/llm] stream error", err);
+      fullReply = "Sorry, I couldn't generate a response. Please try again.";
+    }
 
+    // ── Parse & validate meal actions ─────────────────────────────────────────
+    const mealActionsCount = parseAndValidateMealActions(fullReply);
+
+    // ── Persist assistant reply (without action blocks) ───────────────────────
+    const cleanReply = fullReply
+      .replace(/<meal_action>[\s\S]*?<\/meal_action>/g, "")
+      .trim();
+    await chatData.addMessage({ userId, role: "assistant", content: cleanReply });
+
+    // ── Return buffered reply as a streaming-compatible response ──────────────
+    // The client reads via getReader() and handles both single-chunk and
+    // multi-chunk bodies identically, so this is transparent to ChatBox.
+    const encoder = new TextEncoder();
     const stream = new ReadableStream({
-      async start(controller) {
-        try {
-          for await (const chunk of chatStream(llmMessages)) {
-            fullReply += chunk;
-            controller.enqueue(encoder.encode(chunk));
-          }
-          // Strip <meal_action> blocks before saving to history so they don't
-          // pollute future LLM context.
-          const cleanReply = fullReply
-            .replace(/<meal_action>[\s\S]*?<\/meal_action>/g, "")
-            .trim();
-          await chatData.addMessage({ userId, role: "assistant", content: cleanReply });
-        } catch (err) {
-          console.error("[POST /api/llm] stream error", err);
-          controller.enqueue(
-            encoder.encode("Sorry, I couldn't generate a response. Please try again.")
-          );
-        } finally {
-          controller.close();
-        }
+      start(controller) {
+        controller.enqueue(encoder.encode(fullReply));
+        controller.close();
       },
     });
 
     return new Response(stream, {
       headers: {
         "Content-Type": "text/plain; charset=utf-8",
-        "Transfer-Encoding": "chunked",
         "X-Content-Type-Options": "nosniff",
+        "X-Meal-Actions-Count": String(mealActionsCount),
       },
     });
   } catch (err) {
