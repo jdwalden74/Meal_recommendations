@@ -61,14 +61,72 @@ Rules:
 - If the user asks what meals you'd suggest or what they'd like, generate specific meal recommendations with full <meal_action> blocks. Do not respond with empty category headers like "Breakfast:", "Lunch:", "Dinner:" followed by nothing — every meal you mention must have a name, description, and complete nutrition data.
 `.trim();
 
+function summarizePlans(plans: MealPlan[], today: string): string {
+  const todayMs = new Date(today + "T00:00:00Z").getTime();
+  const cap14Date = new Date(todayMs + 14 * 86400000).toISOString().split("T")[0];
+  const next7Date = new Date(todayMs + 7 * 86400000).toISOString().split("T")[0];
+
+  const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+  const lines: string[] = [];
+  let dayCount = 0;
+
+  const sortedPlans = [...plans].sort((a, b) => a.weekStartDate.localeCompare(b.weekStartDate));
+
+  for (const plan of sortedPlans) {
+    if (dayCount >= 14) break;
+    const sortedDays = [...plan.days].sort((a, b) => a.date.localeCompare(b.date));
+    const weekLines: string[] = [];
+
+    for (const day of sortedDays) {
+      if (dayCount >= 14) break;
+      if (day.date < today || day.date > cap14Date) continue;
+
+      const hasMeals = day.meals.length > 0;
+      const withinNext7 = day.date <= next7Date;
+      if (!hasMeals && !withinNext7) continue;
+
+      const d = new Date(day.date + "T00:00:00Z");
+      const label = `${DAY_NAMES[d.getUTCDay()]} ${MONTH_NAMES[d.getUTCMonth()]} ${d.getUTCDate()}`;
+
+      if (!hasMeals) {
+        weekLines.push(`- ${label}: no meals planned`);
+      } else {
+        const fmt = (type: string) => {
+          const m = day.meals.find((x) => x.type === type);
+          return m ? `${m.name} (${m.nutrition.calories} kcal)` : "none";
+        };
+        weekLines.push(
+          `- ${label}: Breakfast: ${fmt("breakfast")} | Lunch: ${fmt("lunch")} | Dinner: ${fmt("dinner")}`
+        );
+      }
+      dayCount++;
+    }
+
+    if (weekLines.length > 0) {
+      lines.push(`Week of ${plan.weekStartDate}:`);
+      lines.push(...weekLines);
+    }
+  }
+
+  return lines.join("\n");
+}
+
 function buildSystemPrompt(
   preferences: UserPreferences | null,
   recentPlans: MealPlan[],
   today: string,
   recommendations: RecommendedFood[]
 ): string {
+  const tomorrowDate = new Date(today + "T00:00:00Z");
+  tomorrowDate.setUTCDate(tomorrowDate.getUTCDate() + 1);
+  const tomorrow = tomorrowDate.toISOString().split("T")[0];
+
   const lines: string[] = [
-    `You are a helpful meal planning assistant. Today's date is ${today}.`,
+    `TODAY IS ${today}. TOMORROW IS ${tomorrow}. Use these dates for ALL relative date references.`,
+    "",
+    "You are a helpful meal planning assistant.",
     "You help users plan healthy, personalized meals for their weekly calendar.",
     "Keep responses concise and practical.",
     `NEVER start your response with a date prefix like [${today}]. Do not output any date stamps.`,
@@ -130,14 +188,11 @@ function buildSystemPrompt(
 
   // ── Current meal plans section ─────────────────────────────────────────────
   if (recentPlans.length > 0) {
-    lines.push("## Current Meal Plans (JSON)");
-    lines.push("The following shows the user's existing meal plans. Use this as context when answering questions or making changes.");
-    lines.push("```json");
-    lines.push(JSON.stringify(recentPlans, null, 2));
-    lines.push("```");
+    lines.push("## Current Meal Plan");
+    lines.push(summarizePlans(recentPlans, today));
     lines.push("");
   } else {
-    lines.push("## Current Meal Plans");
+    lines.push("## Current Meal Plan");
     lines.push("No meal plans have been created yet.");
     lines.push("");
   }
@@ -156,8 +211,8 @@ function buildSystemPrompt(
       "restrictions, regardless of whether it appears in this list."
     );
     lines.push("");
-    for (const food of recommendations) {
-      lines.push(`- ${food.name} (${food.calories} kcal/100 g) — ${food.category}`);
+    for (const food of recommendations.slice(0, 8)) {
+      lines.push(`- ${food.name} (${food.calories} kcal)`);
     }
   } else {
     lines.push("No personalized suggestions available for this session.");
@@ -166,10 +221,9 @@ function buildSystemPrompt(
 
   // ── Date handling rules ────────────────────────────────────────────────────
   lines.push("## Date Handling Rules");
-  lines.push(`Today is ${today} (YYYY-MM-DD).`);
-  lines.push("- Resolve ALL relative dates (tomorrow, next Monday, the 13th, this weekend) to absolute ISO dates silently. Never ask the user what date they mean.");
-  lines.push("- If the user's message includes an [Active date context: YYYY-MM-DD] prefix, that is the date they are referring to. Use it directly.");
-  lines.push("- Dates inside <meal_action> blocks must always be absolute ISO strings. Never use relative date strings inside action blocks.");
+  lines.push(`- "the Nth" → find the next upcoming date with that day number from today`);
+  lines.push(`- "tomorrow" → ${tomorrow}`);
+  lines.push(`- "next [weekday]" → calculate from today, resolve silently, never ask`);
   lines.push("");
 
   // ── History handling rules ─────────────────────────────────────────────────
@@ -261,6 +315,10 @@ function parseAndValidateMealActions(reply: string): number {
 
   return validCount;
 }
+
+// ─── Timeout error ────────────────────────────────────────────────────────────
+
+class TimeoutError extends Error {}
 
 // ─── Auth helper ───────────────────────────────────────────────────────────────
 
@@ -374,12 +432,24 @@ export async function POST(request: Request) {
     //       (HTTP headers must be sent before the body).
     let fullReply = "";
     try {
-      for await (const chunk of chatStream(llmMessages)) {
-        fullReply += chunk;
-      }
+      await Promise.race([
+        (async () => {
+          for await (const chunk of chatStream(llmMessages)) {
+            fullReply += chunk;
+          }
+        })(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new TimeoutError("LLM timeout")), 25000)
+        ),
+      ]);
     } catch (err) {
-      console.error("[POST /api/llm] stream error", err);
-      fullReply = "Sorry, I couldn't generate a response. Please try again.";
+      if (err instanceof TimeoutError) {
+        console.warn("[POST /api/llm] stream timed out after 25s");
+        fullReply = "I'm taking too long to respond — please try again.";
+      } else {
+        console.error("[POST /api/llm] stream error", err);
+        fullReply = "Sorry, I couldn't generate a response. Please try again.";
+      }
     }
 
     // ── Parse & validate meal actions ─────────────────────────────────────────

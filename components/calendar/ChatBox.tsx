@@ -625,7 +625,7 @@ export function ChatBox({ onMealPlanChanged, initialInput }: ChatBoxProps) {
           <p className="font-semibold text-amber-800 dark:text-amber-300 mb-2">
             ⚠ The assistant wants to replace existing meals:
           </p>
-          <ul className="space-y-1.5 mb-3">
+          <ul className="space-y-1.5 mb-3 max-h-[140px] overflow-y-auto">
             {pendingOverwrites.map((ow, i) => (
               <li key={i} className="text-slate-700 dark:text-slate-300">
                 <span className="font-medium">
