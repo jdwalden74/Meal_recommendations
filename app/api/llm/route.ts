@@ -338,8 +338,13 @@ export async function POST(request: Request) {
       return Response.json({ error: "Unauthorized." }, { status: 401 });
     }
 
-    const body = await request.json();
-    const { message } = body ?? {};
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return Response.json({ error: "Invalid JSON." }, { status: 400 });
+    }
+    const { message } = (body as Record<string, unknown>) ?? {};
 
     if (!message || typeof message !== "string" || message.trim().length === 0) {
       return Response.json(

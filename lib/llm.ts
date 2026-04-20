@@ -2,7 +2,7 @@ import { GoogleGenerativeAI, Content } from "@google/generative-ai";
 
 const genAI = new GoogleGenerativeAI(process.env.LLM_TOKEN!);
 
-const DEFAULT_MODEL = "gemini-2.5-flash-lite";
+const DEFAULT_MODEL = process.env.LLM_MODEL ?? "gemini-2.5-flash-lite";
 
 export type LlmMessage = {
   role: "user" | "model";
