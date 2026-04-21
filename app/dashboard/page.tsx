@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
+import type { UserPreferences } from "@/lib/interfaces";
 import { startOfWeek, addDays, format, parseISO } from "date-fns";
 import { DayMeals, Meal } from "@/components/calendar/types";
 import { MealEditModal } from "@/components/calendar/MealEditModal";
@@ -126,6 +127,29 @@ export default function Dashboard() {
   const [editMeal, setEditMeal] = useState<Meal | null>(null);
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [preferences, setPreferences] = useState<Pick<UserPreferences, "caloricTarget"> | null>(null);
+  const onboardingChecked = useRef(false);
+
+  // Onboarding guard + preferences fetch
+  useEffect(() => {
+    if (onboardingChecked.current) return;
+    onboardingChecked.current = true;
+    fetch("/api/preferences")
+      .then((r) => {
+        if (r.status === 404) {
+          router.replace("/onboarding");
+          return null;
+        }
+        return r.ok ? r.json() : null;
+      })
+      .then((data) => {
+        if (data?.caloricTarget) {
+          setPreferences({ caloricTarget: data.caloricTarget });
+        }
+      })
+      .catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Load this week's plan from DB on mount
   useEffect(() => {
@@ -261,7 +285,11 @@ export default function Dashboard() {
   useEffect(() => {
     fetch("/api/recommendations")
       .then((r) => (r.ok ? r.json() : []))
-      .then((data: RecommendedFood[]) => setRecommendations(data.slice(0, 8)))
+      .then((data: RecommendedFood[]) => {
+        const seen = new Set<string>();
+        const unique = data.filter((f) => !seen.has(f.name) && seen.add(f.name));
+        setRecommendations(unique.slice(0, 8));
+      })
       .catch(() => {});
   }, []);
 
@@ -324,9 +352,9 @@ export default function Dashboard() {
               </span>
             </div>
             <div className="flex flex-wrap gap-2">
-              {recommendations.map((food) => (
+              {recommendations.map((food, idx) => (
                 <button
-                  key={food.name}
+                  key={`${food.name}-${idx}`}
                   onClick={() =>
                     router.push(
                       `/calendar?suggest=${encodeURIComponent(
@@ -448,9 +476,9 @@ export default function Dashboard() {
             <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm p-5">
               <h2 className="font-semibold text-slate-900 dark:text-white mb-4">Daily avg macros</h2>
               <div className="space-y-4">
-                <MacroBar label="Protein" value={avgProtein} max={150} color="bg-blue-500" />
-                <MacroBar label="Carbs" value={avgCarbs} max={300} color="bg-amber-400" />
-                <MacroBar label="Fat" value={avgFat} max={80} color="bg-rose-400" />
+                <MacroBar label="Protein" value={avgProtein} max={Math.round((preferences?.caloricTarget ?? 2000) * 0.25 / 4)} color="bg-blue-500" />
+                <MacroBar label="Carbs" value={avgCarbs} max={Math.round((preferences?.caloricTarget ?? 2000) * 0.45 / 4)} color="bg-amber-400" />
+                <MacroBar label="Fat" value={avgFat} max={Math.round((preferences?.caloricTarget ?? 2000) * 0.30 / 9)} color="bg-rose-400" />
               </div>
             </div>
 
