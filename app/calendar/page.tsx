@@ -1,6 +1,6 @@
 "use client"
 import { useState, useEffect, useRef, Suspense } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useSearchParams, useRouter as useNextRouter } from 'next/navigation';
 import { format, parseISO, addMonths, subMonths, startOfWeek, addWeeks, subWeeks, isSameDay, startOfMonth, endOfMonth, addDays } from 'date-fns';
 import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, LayoutGrid, Rows3, Save } from 'lucide-react';
 import { CalendarMonthView } from '@/components/calendar/CalendarMonthView';
@@ -70,9 +70,21 @@ async function persistWeek(days: DayMeals[], weekStart: Date) {
 
 function CalendarContent() {
   const searchParams = useSearchParams();
+  const calendarRouter = useNextRouter();
   // Consume ?suggest= once — after reading we don't want it to re-apply on
   // every render, so we capture it into a ref on first mount only.
   const initialInput = useRef(searchParams.get('suggest') ?? '').current;
+  const onboardingChecked = useRef(false);
+
+  // Onboarding guard — redirect to /onboarding if user has no preferences yet
+  useEffect(() => {
+    if (onboardingChecked.current) return;
+    onboardingChecked.current = true;
+    fetch('/api/preferences').then((r) => {
+      if (r.status === 404) calendarRouter.replace('/onboarding');
+    }).catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<Date | null>(new Date());
