@@ -15,5 +15,7 @@ export const config = {
     "/profile/:path*",
     "/onboarding/:path*",
     "/onboarding",
+    "/cookbook/:path*",
+    "/cookbook",
   ],
 };

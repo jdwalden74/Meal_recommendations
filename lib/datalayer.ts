@@ -1,5 +1,5 @@
 import clientPromise from "./db";
-import { User, UserPreferences, MealPlan, DayMeals, ChatMessage, MealRating } from "./interfaces";
+import { User, UserPreferences, MealPlan, DayMeals, ChatMessage, MealRating, Recipe, ShoppingList } from "./interfaces";
 
 // ─── Base ──────────────────────────────────────────────────────────────────────
 
@@ -233,5 +233,119 @@ export class MealRatingData extends DataLayer {
       ])
       .toArray();
     return result[0]?.avg ?? null;
+  }
+}
+
+// ─── Recipes ───────────────────────────────────────────────────────────────────
+
+export class RecipeData extends DataLayer {
+  private collectionName = "recipes";
+
+  private async getCollection() {
+    const db = await this.getDb();
+    return db.collection<Recipe>(this.collectionName);
+  }
+
+  /** List all recipes for a user with optional search/tag/favorites filtering. */
+  public async getRecipes(
+    userId: string,
+    opts: { search?: string; tag?: string; favoritesOnly?: boolean } = {}
+  ) {
+    const collection = await this.getCollection();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const filter: Record<string, any> = { userId };
+    if (opts.favoritesOnly) filter.isFavorite = true;
+    if (opts.tag) filter.tags = opts.tag;
+    if (opts.search) filter.title = { $regex: opts.search, $options: "i" };
+    return collection.find(filter).sort({ createdAt: -1 }).toArray();
+  }
+
+  /** Fetch a single recipe by id, scoped to the user. */
+  public async getRecipe(userId: string, id: string) {
+    const { ObjectId } = await import("mongodb");
+    const collection = await this.getCollection();
+    return collection.findOne({ userId, _id: new ObjectId(id) });
+  }
+
+  /** Create a new recipe. */
+  public async createRecipe(recipe: Omit<Recipe, "_id" | "createdAt" | "updatedAt">) {
+    const collection = await this.getCollection();
+    const now = new Date();
+    return collection.insertOne({ ...recipe, createdAt: now, updatedAt: now });
+  }
+
+  /** Replace all mutable fields of a recipe. */
+  public async updateRecipe(
+    userId: string,
+    id: string,
+    updates: Partial<Omit<Recipe, "_id" | "userId" | "createdAt">>
+  ) {
+    const { ObjectId } = await import("mongodb");
+    const collection = await this.getCollection();
+    return collection.findOneAndUpdate(
+      { userId, _id: new ObjectId(id) },
+      { $set: { ...updates, updatedAt: new Date() } },
+      { returnDocument: "after" }
+    );
+  }
+
+  /** Delete a recipe, ensuring it belongs to the user. */
+  public async deleteRecipe(userId: string, id: string) {
+    const { ObjectId } = await import("mongodb");
+    const collection = await this.getCollection();
+    return collection.deleteOne({ userId, _id: new ObjectId(id) });
+  }
+}
+
+// ─── Shopping Lists ────────────────────────────────────────────────────────────
+
+export class ShoppingListData extends DataLayer {
+  private collectionName = "shoppingLists";
+
+  private async getCollection() {
+    const db = await this.getDb();
+    return db.collection<ShoppingList>(this.collectionName);
+  }
+
+  /** List all shopping lists for a user, newest first. */
+  public async getLists(userId: string) {
+    const collection = await this.getCollection();
+    return collection.find({ userId }).sort({ createdAt: -1 }).toArray();
+  }
+
+  /** Fetch a single shopping list by id, scoped to the user. */
+  public async getList(userId: string, id: string) {
+    const { ObjectId } = await import("mongodb");
+    const collection = await this.getCollection();
+    return collection.findOne({ userId, _id: new ObjectId(id) });
+  }
+
+  /** Create a new shopping list. */
+  public async createList(list: Omit<ShoppingList, "_id" | "createdAt" | "updatedAt">) {
+    const collection = await this.getCollection();
+    const now = new Date();
+    return collection.insertOne({ ...list, createdAt: now, updatedAt: now });
+  }
+
+  /** Update a shopping list's name or items. */
+  public async updateList(
+    userId: string,
+    id: string,
+    updates: Partial<Pick<ShoppingList, "name" | "items">>
+  ) {
+    const { ObjectId } = await import("mongodb");
+    const collection = await this.getCollection();
+    return collection.findOneAndUpdate(
+      { userId, _id: new ObjectId(id) },
+      { $set: { ...updates, updatedAt: new Date() } },
+      { returnDocument: "after" }
+    );
+  }
+
+  /** Delete a shopping list. */
+  public async deleteList(userId: string, id: string) {
+    const { ObjectId } = await import("mongodb");
+    const collection = await this.getCollection();
+    return collection.deleteOne({ userId, _id: new ObjectId(id) });
   }
 }

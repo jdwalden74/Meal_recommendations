@@ -109,3 +109,47 @@ export interface MealRating {
   nutrition: NutritionalInfo;
   ratedAt: Date;
 }
+
+// ─── Cookbook ──────────────────────────────────────────────────────────────────
+
+export interface RecipeIngredient {
+  name: string;
+  amount: number;
+  unit: string;
+}
+
+export interface Recipe {
+  _id?: ObjectId;
+  userId: string;             // matches session user email
+  title: string;
+  photoUrl?: string;          // Vercel Blob URL
+  ingredients: RecipeIngredient[];
+  steps: string[];
+  servings: number;           // base serving count
+  macros: NutritionalInfo;    // per-serving macros
+  tags: string[];
+  notes?: string;
+  isFavorite: boolean;
+  lastCooked?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// ─── Shopping List ─────────────────────────────────────────────────────────────
+
+export interface ShoppingListItem {
+  name: string;
+  amount: number;
+  unit: string;
+  checked: boolean;
+  recipeId?: string;          // optional reference to source recipe
+}
+
+export interface ShoppingList {
+  _id?: ObjectId;
+  userId: string;             // matches session user email
+  name: string;
+  items: ShoppingListItem[];
+  createdAt: Date;
+  updatedAt: Date;
+}

@@ -1,7 +1,7 @@
 "use client"
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Leaf, Menu, X, LayoutDashboard, Home, Sun, Moon, LogIn, LogOut, CalendarIcon, UserCircle } from "lucide-react";
+import { Leaf, Menu, X, LayoutDashboard, Home, Sun, Moon, LogIn, LogOut, CalendarIcon, UserCircle, BookOpen } from "lucide-react";
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { clsx } from "clsx";
@@ -73,6 +73,15 @@ export function Navbar() {
               )}
             >
               Profile
+            </Link>
+            <Link
+              href="/cookbook"
+              className={clsx(
+                "text-sm font-medium transition-colors hover:text-emerald-600 dark:hover:text-emerald-400",
+                location.startsWith("/cookbook") ? "text-emerald-600 dark:text-emerald-400" : "text-slate-500 dark:text-slate-400"
+              )}
+            >
+              Cookbook
             </Link>
 
             {mounted && (
@@ -165,6 +174,14 @@ export function Navbar() {
               >
                 <UserCircle className="w-5 h-5" />
                 Profile
+              </Link>
+              <Link
+                href="/cookbook"
+                className="flex items-center gap-3 p-2 hover:bg-slate-50 dark:hover:bg-slate-900 rounded-lg text-slate-600 dark:text-slate-300"
+                onClick={() => setIsMenuOpen(false)}
+              >
+                <BookOpen className="w-5 h-5" />
+                Cookbook
               </Link>
               <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
                 {session ? (

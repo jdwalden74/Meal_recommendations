@@ -21,6 +21,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "NutriPlan",
   description: "AI-powered personalized meal planning",
+  manifest: "/manifest.json",
 };
 
 export default function RootLayout({
